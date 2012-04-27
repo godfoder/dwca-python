@@ -2,65 +2,57 @@ import zipfile
 from lxml import etree
 import sys
 from collections import deque
+import xmlDictTools
+
+import pprint
 
 FNF_ERROR = "File {0} not present in archive."
+
+NAMESPACES = { "http://rs.tdwg.org/dwc/terms/": "dwc:",
+               "http://purl.org/dc/terms/": "dcterms:",
+               "http://rs.tdwg.org/ac/terms/": "ac:",
+               "http://ns.adobe.com/xap/1.0/rights/": "xmpRights:",
+               "http://ns.adobe.com/xap/1.0/": "xmp:",
+               "http://iptc.org/std/Iptc4xmpExt/1.0/xmlns/": "Iptc4xmpExt:",
+             }
 
 class Dwca:
     """
         Internal representation of a Darwin Core Archive file.
     """
     
-    archtree = None
-    archive = None
-    namespace = ""
+    archdict = None
+    archive = None   
     metadata = None
     core = None
     extensions = None
 
     def __init__(self,name="dwca.zip"):
         self.archive = zipfile.ZipFile(name, 'r')
-        try:
-            meta = self.archive.open('meta.xml','r')
-        except Exception:
-            print(FNF_ERROR.format('meta.xml'))
-            sys.exit(1)
-    
-        self.archtree = etree.parse(meta)      
-        root = self.archtree.getroot()
 
-        try:
-            ns = root.nsmap[None]
-            self.namespace = "{{{0}}}".format(ns)
-        except:
-            pass
+        meta = self.archive.open('meta.xml','r')
+        root = etree.parse(meta).getroot()
+        rdict = xmlDictTools.xml2d(root)
+                
+        self.archdict = rdict["archive"]
 
-        metadata = root.attrib["metadata"]
-        try:
-            mf = self.archive.open(metadata,'r')
-            self.metadata = etree.parse(mf)
-        except Exception:
-            print(FNF_ERROR.format(metadata))
+        metadata = self.archdict["#metadata"]
+        mf = self.archive.open(metadata,'r')            
+        mdtree = etree.parse(mf).getroot()           
+        self.metadata = xmlDictTools.xml2d(mdtree)      
 
-        files = self.archtree.findall(".//{0}files/{0}location".format(self.namespace))
-       
+        corefile = self.archdict["core"]["files"]["location"]
+        self.core = DwcaRecordFile(self.archdict["core"], self.archive.open(corefile,'r'))
+        
         self.extensions = []
-        for f in files:
-            fname = f.text
-            fgp = f.getparent().getparent()
-            try:
-                rfh = self.archive.open(fname,'r')
-                rf = DwcaRecordFile(f,rfh)
-                if fgp.tag == "{0}core".format(self.namespace):
-                    self.core = rf
-                else:
-                    self.extensions.append(rf)               
-            except Exception:
-                print(FNF_ERROR.format(fname))
-                sys.exit(1)
-
-        if self.core == None:
-            print("Core file definition not found in meta.xml")
-            sys.exit(1)
+        if "extension" in self.archdict:
+            if isinstance(self.archdict["extension"],list):
+                for x in self.archdict["extension"]:
+                    extfile = x["files"]["location"]
+                    self.extensions.append(DwcaRecordFile(x, self.archive.open(extfile,'r')))
+            else:            
+                extfile = self.archdict["extension"]["files"]["location"]
+                self.extensions.append(DwcaRecordFile(self.archdict["extension"], self.archive.open(extfile,'r')))
 
 class DwcaRecordFile:
     """
@@ -78,15 +70,17 @@ class DwcaRecordFile:
     fieldsplit = "\t"
     fieldenc = ""
     ignoreheader = 0
+    defaults = None
     # Don't instantiate objects here
     fields = None 
     linebuf = None
-    def __init__(self,filetree,fh):
+    def __init__(self,filedict,fh):
         """
             Construct a DwcaRecordFile from a xml tree pointer to the <location> tag containing the data file name
             and a file handle pointing to the data file.
         """
-        self.name = filetree.text
+               
+        self.name = filedict['files']['location']
         self.filehandle = fh
         
         # Instantiate objects here or we get cross talk between classes.
@@ -94,29 +88,35 @@ class DwcaRecordFile:
         self.linebuf = deque()
         closed = False
 
-        try:
-            ns = filetree.nsmap[None]
-            self.namespace = "{{{0}}}".format(ns)
-        except:
-            pass
-
-        fgp = filetree.getparent().getparent()
-        self.filetype = fgp.tag
-        self.rowtype = fgp.attrib["rowType"]
-        self.encoding = fgp.attrib["encoding"]
-        self.linesplit = fgp.attrib["linesTerminatedBy"].decode('string_escape') 
-        self.fieldsplit = fgp.attrib["fieldsTerminatedBy"].decode('string_escape') 
-        self.fieldenc = fgp.attrib["fieldsEnclosedBy"].decode('string_escape') 
-        self.ignoreheader = int(fgp.attrib["ignoreHeaderLines"])
-
         idtag = "id"
-        if fgp.tag != "{0}core".format(self.namespace):
+        if 'id' in filedict:
+            self.filetype = "core"
+        else:
             idtag = "coreid"
+            self.filetype = "extension"
+        self.rowtype = filedict["#rowType"]
+        self.encoding = filedict["#encoding"]
+        self.linesplit = filedict["#linesTerminatedBy"].decode('string_escape') 
+        self.fieldsplit = filedict["#fieldsTerminatedBy"].decode('string_escape') 
+        self.fieldenc = filedict["#fieldsEnclosedBy"].decode('string_escape') 
+        self.ignoreheader = int(filedict["#ignoreHeaderLines"])
 
-        idfld = fgp.find("{0}{1}".format(self.namespace,idtag))
-        self.fields[int(idfld.attrib['index'])] = idtag
-        for fld in fgp.findall("{0}field".format(self.namespace)):
-            self.fields[int(fld.attrib['index'])] = fld.attrib['term']
+
+        idfld = filedict[idtag]
+        self.fields[int(idfld['#index'])] = idtag
+        self.defaults = {}
+        for fld in filedict['field']:
+            term = fld['#term']
+            for ns in NAMESPACES:
+                if term.startswith(ns):
+                    term = term.replace(ns,NAMESPACES[ns])
+                    break
+            if '#index' in fld:
+                self.fields[int(fld['#index'])] = term
+            elif '#default' in fld:
+                self.defaults[term] = fld['#default']
+            else:
+                raise Exception("Field {0} has neither index nor default in {1}".format(term,self.name))
 
     def __iter__(self):
         """
@@ -164,9 +164,11 @@ class DwcaRecordFile:
         lineDict = {}
         for k in self.fields:
             try:
-                lineDict[self.fields[k]] = lineArr[k]
+                if lineArr[k] != "":
+                    lineDict[self.fields[k]] = lineArr[k]
             except IndexError:
                 print "Line missing fields: ", line
+        lineDict.update(self.defaults)
         return lineDict
 
     def readlines(self,sizehint=None):
