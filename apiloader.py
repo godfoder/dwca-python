@@ -23,9 +23,9 @@ parser.add_option("-q", "--quiet",
 (options, args) = parser.parse_args()
 
 def send_to_api(url,data):
-    req = urllib2.Request(url)
-    req.add_header('Content-type', 'application/json')
-    req.add_data(json.dumps(data,separators=(',',':')))
+    jo = json.dumps(data,separators=(',',':'))
+    req = urllib2.Request(url, jo, {'Content-Type': 'application/json'})  
+    response = None
     try:
         r = urllib2.urlopen(req)
         response = json.loads(r.read())
@@ -33,18 +33,18 @@ def send_to_api(url,data):
         print e
     return response
     
-num_worker_threads = 10
-def worker():
-    while True:
-        item = q.get()
-        send_to_api(item[0],item[1])
-        q.task_done()
+#num_worker_threads = 2
+#def worker():
+    #while True:        
+        #item = q.get()
+        #send_to_api(item[0],item[1])
+        #q.task_done()
 
-q = Queue()
-for i in range(num_worker_threads):
-     t = Thread(target=worker)
-     t.daemon = True
-     t.start()
+#q = Queue()
+#for i in range(num_worker_threads):
+     #t = Thread(target=worker)
+     #t.daemon = True
+     #t.start()
 
     
 if options.file == None:
@@ -68,22 +68,40 @@ else:
             pass
         data = { "idigbio:data": dwcaobj.metadata, "idigbio:providerId": provid }
         data["idigbio:data"]["idigbio:packedXML"] = packedXML
-        del data["idigbio:data"]["!namespaces"];
-        of.write(json.dumps(data,separators=(',',':')))
+        del data["idigbio:data"]["!namespaces"];        
+        #of.write(json.dumps(data))
         response = send_to_api('http://dev.idigbio.org:8191/v1/recordsets/',data)
-        parentUuid = response['idigbio:uuid']
+        if response:
+            parentUuid = response['idigbio:uuid']
+        else:
+            print "Failed to set RecordSet"
+            sys.exit()
             
+        qu = { "idigbio:items": [], "idigbio:parentUuid": parentUuid }
+        
         for record in dwcaobj.core:
             data = { "idigbio:data": record,
-                     "idigbio:providerId": record["id"],
-                     "idigbio:parentUuid": parentUuid
+                     "idigbio:providerId": record["id"],                     
             }
-            q.put(("http://dev.idigbio.org:8191/v1/records",data))
-            #of.write(json.dumps(data,separators=(',',':')))        
+            qu["idigbio:items"].append(data)
+            if len(qu["idigbio:items"]) >= 100:
+                #of.write(json.dumps(qu))
+                send_to_api("http://dev.idigbio.org:8191/v1/records/",qu)
+                qu["idigbio:items"] = []                
+            #q.put(("http://dev.idigbio.org:8191/v1/records",data))            
+        if len(qu["idigbio:items"]) >= 0:    
+            send_to_api("http://dev.idigbio.org:8191/v1/records/",qu)
+            qu["idigbio:items"] = []
+            
         for dwcrf in dwcaobj.extensions:
             for record in dwcrf:
-                data = { "idigbio:data": record, "idigbio:parentUuid": parentUuid }
-                q.put(("http://dev.idigbio.org:8191/v1/mediarecords",data))
-                #of.write(json.dumps(data,separators=(',',':')))        
-        
-q.join()       # block until all tasks are done
+                data = { "idigbio:data": record, }
+                qu["idigbio:items"].append(data)
+                if len(qu["idigbio:items"]) >= 100:
+                    send_to_api("http://dev.idigbio.org:8191/v1/mediarecords/",qu)
+                    qu["idigbio:items"] = []                    
+                #q.put(("http://dev.idigbio.org:8191/v1/mediarecords",data))                
+        if len(qu["idigbio:items"]) >= 0:    
+            send_to_api("http://dev.idigbio.org:8191/v1/mediarecords/",qu)
+            qu["idigbio:items"] = []       
+#q.join()       # block until all tasks are done
