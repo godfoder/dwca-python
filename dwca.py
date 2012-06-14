@@ -146,7 +146,7 @@ class DwcaRecordFile:
             Returns a parsed record line from a DWCA file as an dictionary.
         """
         while len(self.linebuf) == 0:            
-            fileLine = self.filehandle.readline()
+            fileLine = self.filehandle.readline().decode(self.encoding)
             if len(fileLine) == 0:
                 return {}
             else:

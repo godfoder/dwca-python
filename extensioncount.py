@@ -16,16 +16,24 @@ parser.add_option("-q", "--quiet",
 
 (options, args) = parser.parse_args()
 
+ids = {}
+
 if options.file == None:
     parser.print_help()
     sys.exit(1)
 else:   
     dwcaobj = dwca.Dwca(options.file)
     for record in dwcaobj.core:
-        print(json.dumps(record,separators=(',',':')))        
+        ids[record["id"]] = 0
+        #print(json.dumps(record,separators=(',',':')))
     for dwcrf in dwcaobj.extensions:
         for record in dwcrf:
-            print(json.dumps(record,separators=(',',':')))
-    print(json.dumps(dwcaobj.metadata,separators=(',',':')))
+            ids[record["coreid"]] += 1
+            #print(json.dumps(record,separators=(',',':')))            
+    #print(json.dumps(dwcaobj.metadata,separators=(',',':')))
+    for k in ids.keys():
+        if ids[k] == 0:
+            del ids[k]
+    pprint.pprint(ids)
     
         
